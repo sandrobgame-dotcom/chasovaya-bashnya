@@ -139,7 +139,7 @@ h2{font-family:var(--display);font-weight:400;font-size:22px;margin:8px 0 0;colo
       <button class="go" id="solo">Играть одному</button>
       <span class="best" id="bestTxt"></span>
     </div>
-    <div class="mp" hidden>
+    <div class="mp">
       <span class="mp-title">С друзьями · до 4 игроков</span>
       <div class="row">
         <button class="go alt" id="create" disabled>Создать игру</button>
@@ -147,7 +147,7 @@ h2{font-family:var(--display);font-weight:400;font-size:22px;margin:8px 0 0;colo
         <button class="go alt" id="joinBtn" disabled>Войти</button>
       </div>
       <p class="note" id="mpNote">Подключение…</p>
-      <p class="note">Друзья открывают эту же страницу в Claude (пригласи их через кнопку «Поделиться» у страницы), вводят код и нажимают «Войти».</p>
+      <p class="note">Друзья открывают бота @chasovaya_bashnya_bot, жмут «Играть», вводят код и нажимают «Войти». Не пиши в имени свою настоящую фамилию.</p>
     </div>
     <p class="keys"><kbd>W A S D</kbd> или стрелки — ходить · <kbd>E</kbd> — комод / шкаф / будильник · <kbd>F</kbd> — фонарь · <kbd>Shift</kbd> — красться тихо. На телефоне: джойстик слева, кнопки справа.</p>
     <h2>Кто живёт в башне</h2>
@@ -165,6 +165,7 @@ h2{font-family:var(--display);font-weight:400;font-size:22px;margin:8px 0 0;colo
     <div class="plist" id="lobbyList"></div>
     <div class="row">
       <button class="go" id="lobbyStart">Начать</button>
+      <button class="go alt" id="lobbyShare">Отправить код другу</button>
       <button class="go ghost" id="lobbyLeave">Выйти</button>
       <span class="best" id="lobbyWait"></span>
     </div>
@@ -189,6 +190,7 @@ h2{font-family:var(--display);font-weight:400;font-size:22px;margin:8px 0 0;colo
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <script>
 (function(){
 const cvs=document.getElementById('c'),ctx=cvs.getContext('2d');
@@ -254,7 +256,7 @@ const sfx={
 let mode='menu';      // menu | solo | host | client
 let state='menu';     // menu | lobby | play | dead | win
 let R=null,P=null,G=null,S=null,best=0,seen={},fade=0,shake=0,toastT=0,lockToastT=0,killer='';
-let room=null,myPeer='me',code='',hostPeer=null,curSeed=null,lastHit=0,lastFx=0,hostMissT=0,advanceReq=false,teamT=0,tickT=0,callT=0;
+let joining=false,room=null,myPeer='me',code='',hostPeer=null,curSeed=null,lastHit=0,lastFx=0,hostMissT=0,advanceReq=false,teamT=0,tickT=0,callT=0;
 let act={r:0,d:0,p:0,u:0,x:0,o:0,w:0};
 const others=new Map();
 const me={nick:'',c:0};
@@ -683,20 +685,23 @@ function showBest(){if(window.__tgBest&&window.__tgBest>best)best=window.__tgBes
 function saveNick(){me.nick=nickOf();try{localStorage.setItem('tower-nick',me.nick)}catch(e){}}
 function startSolo(){initAudio();saveNick();mode='solo';myPeer='me';code='';others.clear();G=newG();G.st='play';resetLocal();hostEnter(1);showPlay()}
 function hostRestart(){initAudio();G.seed=(Math.random()*1e9)|0;G.st='play';resetLocal();hostEnter(1);showPlay()}
-function createGame(){if(!room)return;initAudio();saveNick();code=String(1000+Math.floor(Math.random()*9000));mode='host';me.c=0;others.clear();G=newG();resetLocal();R=null;showLobby();publish()}
-function joinGame(){
-  if(!room)return;initAudio();saveNick();
+function createGame(){if(!room)return;initAudio();saveNick();code=String(1000+Math.floor(Math.random()*9000));room.watch(code);mode='host';me.c=0;others.clear();G=newG();resetLocal();R=null;showLobby();publish()}
+async function joinGame(){
+  if(!room||joining)return;initAudio();saveNick();
   const c=$('codeIn').value.trim();const note=$('mpNote');note.classList.add('warn');
   if(!/^\d{4}$/.test(c)){note.textContent='Введи код из 4 цифр.';return}
+  joining=true;note.classList.remove('warn');note.textContent='Ищу игру '+c+'…';$('joinBtn').disabled=true;
+  try{await room.watch(c)}finally{joining=false;$('joinBtn').disabled=false}note.classList.add('warn');
   const ps=room.peers().filter(p=>p.kind==='viewer'&&p.presence&&p.presence.g===c&&!(p.isMe&&p.sameTab));
   const host=ps.find(p=>p.presence.host);
-  if(!host){note.textContent='Игра с таким кодом не найдена. Проверь код или подожди пару секунд и попробуй ещё раз.';return}
-  if(ps.length>=MAXP){note.textContent='В этой игре уже 4 игрока.';return}
+  if(!host){room.unwatch(c);note.textContent=room.connected()?'Игра с таким кодом не найдена. Проверь код и что друг уже нажал «Создать игру».':'Нет связи с сервером игры. Проверь интернет и попробуй ещё раз.';return}
+  if(ps.length>=MAXP){room.unwatch(c);note.textContent='В этой игре уже 4 игрока.';return}
   const used=ps.map(p=>num(p.presence.c,-1));me.c=[0,1,2,3].find(i=>!used.includes(i));if(me.c===undefined)me.c=1;
   code=c;mode='client';hostPeer=host.peer;curSeed=null;hostMissT=0;G=null;R=null;resetLocal();others.clear();note.classList.remove('warn');note.textContent='';
   showLobby();publish();
 }
 function leaveGame(msg){
+  if(room&&code)setTimeout(()=>room.unwatch(code),400);
   if(room)room.presence({g:null,host:null,G:null,act:null,x:null,y:null}).catch(()=>{});
   mode='menu';code='';hostPeer=null;R=null;G=null;others.clear();showMenu();
   if(msg){$('mpNote').textContent=msg;$('mpNote').classList.add('warn');toast(msg,false,4)}
@@ -1051,15 +1056,57 @@ function loop(now){const dt=Math.min(.05,(now-last)/1000);last=now;const t=now/1
   requestAnimationFrame(loop)}
 requestAnimationFrame(loop);
 
-/* ---------- multiplayer connection ---------- */
-(async function(){
+/* ---------- multiplayer connection (public MQTT relay) ---------- */
+function makeRoom(){
+  if(!window.mqtt)return null;
+  const PFX='chbashnya-v1/',me='p'+Math.random().toString(36).slice(2,10);
+  const BROKERS=['wss://broker.hivemq.com:8884/mqtt','wss://broker.emqx.io:8084/mqtt'];
+  const others=new Map(),watching=new Set();let cur=null,client=null,ok=false,bi=0,lastCode=null;
+  function connect(){
+    try{client=mqtt.connect(BROKERS[bi],{clientId:'cb_'+me+'_'+bi,keepalive:30,reconnectPeriod:2500,connectTimeout:7000,clean:true})}catch(e){return}
+    const my=client;
+    my.on('connect',()=>{if(my!==client)return;ok=true;for(const c of watching)my.subscribe(PFX+c+'/p/+')});
+    my.on('close',()=>{if(my===client)ok=false});
+    my.on('error',()=>{});
+    my.on('message',(topic,buf)=>{const id=String(topic).split('/').pop();if(!id||id===me||id.length>20)return;
+      if(buf.length>8000)return;let d;try{d=JSON.parse(buf.toString())}catch(e){return}
+      if(!d||typeof d!=='object'||Array.isArray(d))return;
+      if(d.left){others.delete(id);return}
+      others.set(id,{peer:id,presence:d,t:Date.now()})});
+    setTimeout(()=>{if(my===client&&!ok&&bi<BROKERS.length-1){try{my.end(true)}catch(e){}bi++;connect()}},8000);
+  }
+  connect();
+  setInterval(()=>{const now=Date.now();for(const [id,p] of others)if(now-p.t>5000)others.delete(id);
+    if(ok&&cur&&cur.g){try{client.publish(PFX+cur.g+'/p/'+me,JSON.stringify(cur))}catch(e){}}},90);
+  return{
+    connected:()=>ok,
+    peers(){const arr=[{peer:me,kind:'viewer',isMe:true,sameTab:true,presence:cur||{}}];
+      for(const p of others.values())if(p.presence&&watching.has(p.presence.g))arr.push({peer:p.peer,kind:'viewer',isMe:false,sameTab:false,presence:p.presence});return arr},
+    presence(pr){const next=Object.assign({},cur||{});for(const k in pr){if(pr[k]===null)delete next[k];else next[k]=pr[k]}
+      if(cur&&cur.g&&cur.g!==next.g&&ok){try{client.publish(PFX+cur.g+'/p/'+me,JSON.stringify({left:1}))}catch(e){}}
+      cur=next;return Promise.resolve()},
+    watch(code){if(!watching.has(code)){watching.add(code);if(ok)client.subscribe(PFX+code+'/p/+')}
+      return new Promise(r=>{let n=0;const iv=setInterval(()=>{n++;const found=[...others.values()].some(p=>p.presence&&p.presence.g===code&&p.presence.host);
+        if((ok&&found&&n>4)||n>=(ok?20:40)){clearInterval(iv);r()}else if(!ok&&n===1){}},150)})},
+    unwatch(code){watching.delete(code);if(ok){try{client.unsubscribe(PFX+code+'/p/+')}catch(e){}}},
+    onPeers(cb){setTimeout(()=>cb({peers:this.peers()}),0);return()=>{}}
+  };
+}
+(function(){
   const note=$('mpNote');
-  try{room=window.claude&&window.claude.use?await window.claude.use('room'):null}catch(e){room=null}
-  if(!room){note.textContent='Игра с друзьями работает, когда страница открыта в Claude. Здесь можно играть одному.';return}
-  room.onPeers(ch=>{const meP=ch.peers.find(p=>p.isMe&&p.sameTab);if(meP)myPeer=meP.peer},()=>{note.textContent='Не удалось подключиться к игре с друзьями. Можно играть одному.';$('create').disabled=true;$('joinBtn').disabled=true});
-  note.textContent='Создай игру и скажи друзьям код, или введи код друга.';
+  room=makeRoom();
+  if(!room){note.textContent='Не удалось загрузить игру с друзьями (нет интернета?). Можно играть одному.';return}
+  myPeer=room.peers()[0].peer;
+  note.textContent='Создай игру и отправь друзьям код, или введи код друга.';
   $('create').disabled=false;$('joinBtn').disabled=false;
+  setInterval(()=>{if(state==='menu'&&!joining&&!note.classList.contains('warn'))note.textContent=room.connected()?'Создай игру и отправь друзьям код, или введи код друга.':'Подключаюсь к серверу игры…'},1000);
 })();
+$('lobbyShare').addEventListener('click',()=>{
+  const text='Заходи играть со мной в «Часовую башню»! Открой бота, нажми «Играть» и введи код '+code;
+  const url='https://t.me/share/url?url='+encodeURIComponent('https://t.me/chasovaya_bashnya_bot')+'&text='+encodeURIComponent(text);
+  try{if(window.Telegram&&Telegram.WebApp&&Telegram.WebApp.openTelegramLink){Telegram.WebApp.openTelegramLink(url);return}}catch(e){}
+  window.open(url,'_blank');
+});
 
 /* ---------- input ---------- */
 addEventListener('keydown',e=>{
